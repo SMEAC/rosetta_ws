@@ -196,6 +196,11 @@ wandb login
 # First time setup
 ./scripts/setup.sh
 
+After install, add three packages that are not in the docker:
+/home/ros/.venv/bin/python3 -m pip install empy==3.3.4
+/home/ros/.venv/bin/python3 -m pip install catkin_pkg
+/home/ros/.venv/bin/python3 -m pip install lark-parser
+
 # Build packages
 ./scripts/build.sh
 # or

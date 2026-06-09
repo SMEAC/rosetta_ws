@@ -132,9 +132,47 @@ setup_venv() {
     return 1
 }
 
+fix_venv_permissions() {
+    [[ -z "${VIRTUAL_ENV:-}" ]] && return 0
+    [[ ! -d "${VIRTUAL_ENV}" ]] && return 0
+
+    local uid gid
+    uid=$(id -u)
+    gid=$(id -g)
+
+    if [[ "${uid}" -ne 0 ]]; then
+        if command -v sudo >/dev/null 2>&1; then
+            sudo chown -R "${uid}:${gid}" "${VIRTUAL_ENV}" || true
+        fi
+    else
+        chown -R "${uid}:${gid}" "${VIRTUAL_ENV}" || true
+    fi
+}
+
+cleanup_venv_leftovers() {
+    [[ -z "${VIRTUAL_ENV:-}" ]] && return 0
+    [[ ! -d "${VIRTUAL_ENV}" ]] && return 0
+
+    local site_packages
+    site_packages="${VIRTUAL_ENV}/lib/python3.12/site-packages"
+    if [[ -d "${site_packages}" ]]; then
+        for leftover in "${site_packages}"/~*; do
+            if [[ -e "${leftover}" ]]; then
+                echo "Removing invalid venv leftover: ${leftover}"
+                rm -rf "${leftover}" || true
+            fi
+        done
+    fi
+}
+
 ensure_python_deps() {
     [[ -z "${VIRTUAL_ENV:-}" ]] && return 0
     
+    fix_venv_permissions
+    cleanup_venv_leftovers
+    echo "Bootstrapping pip/setuptools/wheel in venv..."
+    python3 -m pip install --upgrade --quiet pip setuptools wheel
+
     local deps=("serial:pyserial" "feetech_servo_sdk:feetech-servo-sdk")
     for dep in "${deps[@]}"; do
         local module="${dep%%:*}"
@@ -156,7 +194,7 @@ if [[ -d "${WORKSPACE}/libs/lerobot" ]]; then
     echo "[INFO] Installing lerobot..."
     # Use constraints to prevent NumPy 2.x (NGC PyTorch compiled against NumPy 1.x)
     # and pin tokenizers for transformers compatibility
-    pip install "${WORKSPACE}/libs/lerobot"
+    python3 -m pip install "${WORKSPACE}/libs/lerobot"
         # --constraint <(echo -e "numpy<2\ntokenizers>=0.21,<0.22") \
 fi
 

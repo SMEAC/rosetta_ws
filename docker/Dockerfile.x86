@@ -86,7 +86,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Development tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash-completion build-essential cmake gdb git git-lfs \
-        openssh-client python3-argcomplete python3-pip \
+        openssh-client python3-argcomplete python3-pip python3-venv \
         ros-dev-tools ros-${ROS_DISTRO}-ament-* vim nano htop \
         # Libraries
         libboost-all-dev libeigen3-dev libfmt-dev libpoco-dev \
@@ -212,6 +212,7 @@ RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pk
 # Simulation dependencies (pinocchio, libfranka)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         liburdfdom-dev \
+        libconsole-bridge-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # tinyxml2
@@ -222,15 +223,6 @@ RUN cd /tmp \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
     && make -j$(nproc) && make install \
     && rm -rf /tmp/tinyxml2
-
-# console_bridge
-RUN cd /tmp \
-    && git clone --depth 1 --branch 1.0.2 https://github.com/ros/console_bridge.git \
-    && cd console_bridge && mkdir build && cd build \
-    && cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
-    && make -j$(nproc) && make install \
-    && rm -rf /tmp/console_bridge
 
 # assimp
 RUN cd /tmp \
@@ -258,6 +250,7 @@ RUN cd /tmp \
     && cmake .. -DBoost_USE_STATIC_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DBUILD_SHARED_LIBS=OFF -DBUILD_PYTHON_INTERFACE=OFF -DBUILD_DOCUMENTATION=OFF \
         -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+        -Dassimp_DIR=/usr/lib/x86_64-linux-gnu/cmake/assimp-5.4 \
     && make -j$(($(nproc) > 2 ? 2 : $(nproc))) && make install && ldconfig \
     && rm -rf /tmp/pinocchio
 

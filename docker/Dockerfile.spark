@@ -1,0 +1,317 @@
+# syntax=docker/dockerfile:1.4
+###############################################################################
+# Rosetta Workspace - NVIDIA DGX Spark (Jetson Thor / aarch64) Development Image
+#
+# Built on nvidia/cuda:13.0.0-devel-ubuntu24.04. PyTorch + CUDA deps installed
+# from spark/pyproject.toml in the dev stage (uv sync), matching the deployment
+# spark setup. ROS 2 and dev tools are layered on top.
+###############################################################################
+
+### Base: CUDA 13.0-devel for DGX Spark (aarch64)
+# Matching the deployment/spark/Dockerfile base image
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Locales
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        locales \
+    && locale-gen en_US.UTF-8 \
+    && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+ENV LANG=en_US.UTF-8
+
+# Timezone
+RUN ln -fs /usr/share/zoneinfo/UTC /etc/localtime \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && dpkg-reconfigure --frontend noninteractive tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Common tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl gnupg2 lsb-release sudo software-properties-common wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# ROS 2 apt source (official method)
+RUN curl -L -s -o /tmp/ros2-apt-source.deb \
+        https://github.com/ros-infrastructure/ros-apt-source/releases/download/1.1.0/ros2-apt-source_1.1.0.$(lsb_release -cs)_all.deb \
+    && apt-get update \
+    && apt-get install -y /tmp/ros2-apt-source.deb \
+    && rm -f /tmp/ros2-apt-source.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV ROS_DISTRO=jazzy
+ENV ROS_VERSION=2
+ENV ROS_PYTHON_VERSION=3
+
+# ROS 2 base + Zenoh
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-ros-base \
+        ros-${ROS_DISTRO}-rmw-zenoh-cpp \
+        python3-argcomplete \
+        python3-rosdep \
+    && rm -rf /var/lib/apt/lists/*
+
+# NVIDIA OpenGL support
+RUN apt-get update && apt-get install -y -qq --no-install-recommends \
+        libglvnd0 libgl1 libglx0 libegl1 libxext6 libx11-6 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute
+ENV QT_X11_NO_MITSHM=1
+ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
+ENV DEBIAN_FRONTEND=
+
+COPY ./ros_entrypoint.sh /
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]
+
+### Dev image: tools + Python dependencies
+FROM base AS dev
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Development tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash-completion build-essential cmake gdb git git-lfs \
+        openssh-client python3-argcomplete python3-pip python3-venv \
+        ros-dev-tools ros-${ROS_DISTRO}-ament-* vim nano htop \
+        # Libraries
+        libboost-all-dev libeigen3-dev libfmt-dev libpoco-dev \
+        libopencv-dev liburdfdom-tools \
+        # Video/media
+        ffmpeg libavformat-dev libavcodec-dev libavutil-dev \
+        libswscale-dev libswresample-dev \
+        # Hardware
+        can-utils udev usbutils pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rosdep init || echo "rosdep already initialized" \
+    && rosdep update --rosdistro=${ROS_DISTRO}
+
+# ROS 2 desktop + robotics packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-desktop \
+        ros-${ROS_DISTRO}-ros2-control \
+        ros-${ROS_DISTRO}-ros2-controllers \
+        ros-${ROS_DISTRO}-xacro \
+        ros-${ROS_DISTRO}-joint-state-publisher-gui \
+        ros-${ROS_DISTRO}-cv-bridge \
+        ros-${ROS_DISTRO}-image-transport \
+        ros-${ROS_DISTRO}-pcl-ros \
+        ros-${ROS_DISTRO}-camera-info-manager \
+        ros-${ROS_DISTRO}-robot-localization \
+        ros-${ROS_DISTRO}-slam-toolbox \
+        ros-${ROS_DISTRO}-teleop-twist-keyboard \
+        ros-${ROS_DISTRO}-teleop-twist-joy \
+        ros-${ROS_DISTRO}-joy \
+        ros-${ROS_DISTRO}-foxglove-bridge \
+        ros-${ROS_DISTRO}-rqt-tf-tree \
+        ros-${ROS_DISTRO}-rosbag2-storage-mcap \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+ARG USERNAME=ros
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+
+RUN if getent passwd ubuntu > /dev/null 2>&1; then \
+        userdel -r ubuntu; \
+    fi \
+    && groupadd --gid $USER_GID $USERNAME \
+    && useradd -s /bin/bash --uid $USER_UID --gid $USER_GID -m $USERNAME \
+    && echo "$USERNAME ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
+    && chmod 0440 /etc/sudoers.d/$USERNAME
+
+# Shell setup for user
+RUN echo "if [ -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then source /opt/ros/${ROS_DISTRO}/setup.bash; fi" >> /home/$USERNAME/.bashrc \
+    && echo "if [ -f /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash ]; then source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash; fi" >> /home/$USERNAME/.bashrc
+
+ENV DEBIAN_FRONTEND=
+ENV AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS=1
+
+# Install uv and Python dependencies (as user)
+USER $USERNAME
+WORKDIR /home/$USERNAME
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/${USERNAME}/.local/bin:${PATH}"
+
+# Create venv (for ROS2 Python packages + Spark deps)
+ENV VIRTUAL_ENV=/home/${USERNAME}/.venv
+RUN uv venv ${VIRTUAL_ENV} \
+    && touch ${VIRTUAL_ENV}/COLCON_IGNORE
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+# ──── Spark wheel setup (matching deployment/spark/Dockerfile) ────
+# Install PyTorch + CUDA deps from spark/pyproject.toml into the workspace venv.
+COPY --chown=${USERNAME}:${USERNAME} ./spark /workspace/docker/spark/
+
+RUN UV_PROJECT_ENVIRONMENT=/home/${USERNAME}/.venv \
+    uv sync --project /workspace/docker/spark \
+        --no-install-project \
+        --extra dev \
+        && uv pip install --python /home/${USERNAME}/.venv/bin/python \
+            --force-reinstall --no-deps pip setuptools wheel \
+        && uv pip install --python /home/${USERNAME}/.venv/bin/python \
+            --force-reinstall --no-deps \
+            /workspace/docker/spark/wheels/flash_attn-2.8.3-cp312-cp312-linux_aarch64.whl \
+        && uv pip install --python /home/${USERNAME}/.venv/bin/python \
+            --force-reinstall --no-deps \
+            /workspace/docker/spark/wheels/torchcodec-0.10.0a0-cp312-cp312-linux_aarch64.whl
+
+USER root
+RUN chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
+USER ${USERNAME}
+
+ENV WORKSPACE=/workspaces/rosetta_ws
+
+# Suppress Ubuntu's "To run a command as administrator" message
+RUN touch ~/.sudo_as_admin_successful
+
+RUN echo "source ~/.venv/bin/activate" >> ~/.bashrc \
+    && echo "if [ -f \"${WORKSPACE}/install/setup.bash\" ]; then source \"${WORKSPACE}/install/setup.bash\"; fi" >> ~/.bashrc \
+    && echo "# ROS2 + venv: Add venv site-packages to PYTHONPATH (https://docs.ros.org/en/jazzy/How-To-Guides/Using-Python-Packages.html)" >> ~/.bashrc \
+    && echo 'export PYTHONPATH="${VIRTUAL_ENV}/lib/python3.12/site-packages:${PYTHONPATH}"' >> ~/.bashrc \
+    && echo "export HF_HUB_ENABLE_HF_TRANSFER=1" >> ~/.bashrc \
+    && echo "alias cb='colcon build --merge-install'" >> ~/.bashrc \
+    && echo "alias cbp='colcon build --merge-install --packages-select'" >> ~/.bashrc \
+    && echo "alias src='source install/setup.bash'" >> ~/.bashrc
+
+WORKDIR ${WORKSPACE}
+
+### Full image: + Simulation
+FROM dev AS full
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Gazebo
+RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] \
+        http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
+        | tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-ros-gz \
+        ros-${ROS_DISTRO}-ros-gz-bridge \
+        ros-${ROS_DISTRO}-turtlebot3-gazebo \
+        ros-${ROS_DISTRO}-turtlebot4-simulator \
+    && rm -rf /var/lib/apt/lists/*
+
+# Simulation dependencies (pinocchio, libfranka)
+# NOTE: assimp and pinocchio are built from source on ARM64 because the
+# Ubuntu package can miss the CMake config required by pinocchio.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        liburdfdom-dev \
+        libconsole-bridge-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# tinyxml2
+RUN cd /tmp \
+    && git clone --depth 1 --branch 10.0.0 https://github.com/leethomason/tinyxml2.git \
+    && cd tinyxml2 && mkdir build && cd build \
+    && cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    && make -j$(nproc) && make install \
+    && rm -rf /tmp/tinyxml2
+
+# assimp
+RUN cd /tmp \
+    && git clone --depth 1 --recursive --branch v5.4.3 https://github.com/assimp/assimp.git \
+    && cd assimp && mkdir build && cd build \
+    && cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
+        -DASSIMP_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    && make -j$(nproc) && make install \
+    && rm -rf /tmp/assimp
+
+# eigenpy
+RUN cd /tmp \
+    && git clone --depth 1 --recursive --branch v2.8.0 https://github.com/stack-of-tasks/eigenpy.git \
+    && cd eigenpy && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF \
+    && make -j$(($(nproc) > 4 ? 4 : $(nproc))) && make install && ldconfig \
+    && rm -rf /tmp/eigenpy
+
+# pinocchio (with libfranka patch)
+RUN cd /tmp \
+    && git clone --depth 1 https://github.com/ros/console_bridge.git \
+    && cd console_bridge && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    && make -j$(nproc) && make install \
+    && cd /tmp \
+    && rm -rf /tmp/console_bridge
+
+RUN mkdir -p /usr/lib/aarch64-linux-gnu/cmake/console_bridge \
+    && cat > /usr/lib/aarch64-linux-gnu/cmake/console_bridge/console_bridgeConfig.cmake <<'EOF'
+# Minimal console_bridgeConfig.cmake created by Dockerfile.spark
+find_library(_console_bridge_LIB NAMES console_bridge HINTS /usr/lib /usr/lib/aarch64-linux-gnu)
+find_path(_console_bridge_INCLUDE_DIR NAMES console_bridge/console.h PATHS /usr/include /usr/include/aarch64-linux-gnu /usr/include/console_bridge)
+if(_console_bridge_LIB AND _console_bridge_INCLUDE_DIR)
+    add_library(console_bridge::console_bridge UNKNOWN IMPORTED)
+    set_target_properties(console_bridge::console_bridge PROPERTIES IMPORTED_LOCATION "${_console_bridge_LIB}" INTERFACE_INCLUDE_DIRECTORIES "${_console_bridge_INCLUDE_DIR}")
+    set(console_bridge_FOUND TRUE)
+else()
+    set(console_bridge_FOUND FALSE)
+endif()
+include("")
+EOF
+
+RUN mkdir -p /usr/share/cmake/Modules \
+    && cat > /usr/share/cmake/Modules/Findconsole_bridge.cmake <<'EOF'
+# Findconsole_bridge.cmake - fallback finder for console_bridge
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(CONSOLE_BRIDGE_PKG console_bridge)
+endif()
+if(CONSOLE_BRIDGE_PKG_FOUND)
+    set(console_bridge_INCLUDE_DIRS ${CONSOLE_BRIDGE_PKG_INCLUDEDIR})
+    set(console_bridge_LIBRARIES ${CONSOLE_BRIDGE_PKG_LIBRARIES})
+    set(console_bridge_FOUND TRUE)
+else()
+    find_library(_console_bridge_LIB NAMES console_bridge HINTS /usr/lib /usr/lib/aarch64-linux-gnu)
+    find_path(_console_bridge_INCLUDE_DIR NAMES console_bridge/console.h PATHS /usr/include /usr/include/aarch64-linux-gnu /usr/include/console_bridge)
+    if(_console_bridge_LIB AND _console_bridge_INCLUDE_DIR)
+        set(console_bridge_LIBRARIES ${_console_bridge_LIB})
+        set(console_bridge_INCLUDE_DIRS ${_console_bridge_INCLUDE_DIR})
+        set(console_bridge_FOUND TRUE)
+    else()
+        set(console_bridge_FOUND FALSE)
+    endif()
+endif()
+EOF
+
+RUN cd /tmp \
+    && rm -rf /tmp/pinocchio \
+    && git clone --depth 1 --recursive --branch v3.4.0 https://github.com/stack-of-tasks/pinocchio.git \
+    && cd /tmp/pinocchio \
+    && curl -sSL https://raw.githubusercontent.com/frankarobotics/libfranka/main/.ci/pinocchio.patch | git apply \
+    && mkdir build && cd build \
+    && cmake .. -DBoost_USE_STATIC_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_SHARED_LIBS=OFF -DBUILD_PYTHON_INTERFACE=OFF -DBUILD_DOCUMENTATION=OFF \
+        -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_MODULE_PATH=/usr/share/cmake/Modules \
+        -DCMAKE_PREFIX_PATH=/usr/lib/aarch64-linux-gnu:/usr:/opt/ros/${ROS_DISTRO} \
+        -Dtinyxml2_DIR=/usr/lib/aarch64-linux-gnu/cmake/tinyxml2 \
+        -Dassimp_DIR=/usr/lib/aarch64-linux-gnu/cmake/assimp-5.4 \
+        -Dconsole_bridge_DIR=/usr/lib/aarch64-linux-gnu/cmake/console_bridge \
+    && make -j$(($(nproc) > 2 ? 2 : $(nproc))) && make install && ldconfig \
+    && rm -rf /tmp/pinocchio
+
+
+
+# libfranka
+RUN cd /tmp \
+    && git clone --depth 1 --recurse-submodules --branch 0.15.0 \
+        https://github.com/frankarobotics/libfranka.git \
+    && cd libfranka && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
+    && make -j$(($(nproc) > 2 ? 2 : $(nproc))) \
+    && cpack -G DEB && dpkg -i libfranka*.deb && ldconfig \
+    && rm -rf /tmp/libfranka
+
+ENV DEBIAN_FRONTEND=
+
+USER $USERNAME
+RUN echo 'export TURTLEBOT3_MODEL=waffle' >> ~/.bashrc
