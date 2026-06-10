@@ -56,6 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # NVIDIA OpenGL support
 RUN apt-get update && apt-get install -y -qq --no-install-recommends \
         libglvnd0 libgl1 libglx0 libegl1 libxext6 libx11-6 \
+        libnvpl-blas0 libnvpl-fft0 libnvpl-lapack0 libnvpl-rand0 libnvpl-sparse0 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -160,7 +161,10 @@ RUN UV_PROJECT_ENVIRONMENT=/home/${USERNAME}/.venv \
             /workspace/docker/spark/wheels/flash_attn-2.8.3-cp312-cp312-linux_aarch64.whl \
         && uv pip install --python /home/${USERNAME}/.venv/bin/python \
             --force-reinstall --no-deps \
-            /workspace/docker/spark/wheels/torchcodec-0.10.0a0-cp312-cp312-linux_aarch64.whl
+            /workspace/docker/spark/wheels/torchcodec-0.10.0a0-cp312-cp312-linux_aarch64.whl \
+        && uv pip install --python /home/${USERNAME}/.venv/bin/python \
+            --force-reinstall --no-deps \
+            empy==3.3.4 catkin_pkg lark-parser
 
 USER root
 RUN chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
