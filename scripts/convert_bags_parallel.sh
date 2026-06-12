@@ -6,9 +6,9 @@ set -e
 
 # Default values
 RAW_DIR="${1:-/workspaces/rosetta_ws/datasets/bags}"
-CONTRACT="${2:-/workspaces/rosetta_ws/src/action/rosetta/contracts/so_101.yaml}"
-REPO_ID="${3:-so_101_dataset}"
-ROOT="${4:-/workspaces/rosetta_ws/datasets/lerobot}"
+CONTRACT="${2:-/workspaces/rosetta_ws/quadruped_openX2.yaml}"
+REPO_ID="${3:-quadruped_openX2_dataset}"
+ROOT="${4:-/workspaces/rosetta_ws/datasets/quadruped_openX2_dataset}"
 NUM_SHARDS="${5:-4}"
 
 echo "========================================"
@@ -39,6 +39,10 @@ echo "Video codec: $LEROBOT_VIDEO_CODEC"
 
 # Create temporary directory for shard datasets
 SHARD_ROOT="${ROOT}/.shards"
+if [ -d "$SHARD_ROOT" ]; then
+    echo "Removing stale shard root: $SHARD_ROOT"
+    rm -rf "$SHARD_ROOT"
+fi
 mkdir -p "$SHARD_ROOT"
 
 echo ""
